@@ -23,6 +23,17 @@ mkdir -p "$APP/Contents/MacOS"
 swiftc -O -swift-version 5 main.swift -o "$APP/Contents/MacOS/TrackEdge" \
   -framework Cocoa -framework CoreAudio -framework ServiceManagement
 
+# App icon: put a square 1024x1024 PNG named icon.png next to this script.
+if [ -f icon.png ]; then
+  ICONSET="$(mktemp -d)/AppIcon.iconset"
+  mkdir -p "$ICONSET" "$APP/Contents/Resources"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s*2)) $((s*2)) icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,6 +41,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleIdentifier</key><string>local.trackedge</string>
   <key>CFBundleName</key><string>TrackEdge</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleExecutable</key><string>TrackEdge</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
