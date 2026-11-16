@@ -464,10 +464,22 @@ private let cursorTapCallback: CGEventTapCallBack = { _, type, event, _ in
         if let t = CursorLock.tap { CGEvent.tapEnable(tap: t, enable: true) }
         return Unmanaged.passUnretained(event)
     }
-    if CursorLock.frozen {
-        // Safety net: never hold the pointer for more than a few seconds.
-        if CACurrentMediaTime() - CursorLock.since > 4 { CursorLock.frozen = false }
-        else { return nil }
+    // Safety net: never hold the pointer for more than a few seconds.
+    if CursorLock.frozen && CACurrentMediaTime() - CursorLock.since > 4 { CursorLock.frozen = false }
+
+    switch type {
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        if CursorLock.frozen {                 // swallow the click
+            CursorLock.swallowed.insert(type.rawValue)
+            return nil
+        }
+    case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+        // Only drop a release whose press we dropped, so no button ever sticks down.
+        let down: CGEventType = (type == .leftMouseUp) ? .leftMouseDown
+            : (type == .rightMouseUp) ? .rightMouseDown : .otherMouseDown
+        if CursorLock.swallowed.remove(down.rawValue) != nil { return nil }
+    default:
+        if CursorLock.frozen { return nil }    // pointer motion
     }
     return Unmanaged.passUnretained(event)
 }
@@ -475,11 +487,14 @@ private let cursorTapCallback: CGEventTapCallBack = { _, type, event, _ in
 enum CursorLock {
     static var tap: CFMachPort?
     static var frozen = false
+    static var swallowed = Set<UInt32>()
     static var since: CFTimeInterval = 0
 
     static func install() {
         CGEventSource(stateID: .combinedSessionState)?.localEventsSuppressionInterval = 0
-        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                                    .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                                    .otherMouseDown, .otherMouseUp]
         var mask: CGEventMask = 0
         for t in types { mask |= (1 << CGEventMask(t.rawValue)) }
         guard let t = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
@@ -935,7 +950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         add(menu, "Swap Sides (brightness on right)", #selector(toggleSwap), on: s.swapSides)
         add(menu, "Haptic Feedback", #selector(toggleHaptics), on: s.haptics)
-        add(menu, "Freeze Cursor While Sliding", #selector(toggleFreeze), on: s.freeze)
+        add(menu, "Freeze Cursor & Block Clicks While Sliding", #selector(toggleFreeze), on: s.freeze)
         add(menu, "Quick Mute (double-tap top-right corner)", #selector(toggleQuickMute), on: s.quickMute)
         add(menu, "Edge Glow", #selector(toggleGlow), on: s.edgeGlow)
         add(menu, "Media Strip (swipe bottom edge, double-tap to play/pause)", #selector(toggleMedia), on: s.mediaStrip)
