@@ -786,6 +786,98 @@ final class Engine {
     }
 }
 
+// MARK: - Auto-update (GitHub Releases)
+
+enum Updater {
+    static let repo = "spidey1102/trackedge"   // <- set to your GitHub "user/repo"
+
+    static var current: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+
+    private static func parts(_ v: String) -> [Int] {
+        v.trimmingCharacters(in: CharacterSet(charactersIn: "vV")).split(separator: ".").map { Int($0) ?? 0 }
+    }
+
+    static func isNewer(_ a: String, than b: String) -> Bool {
+        let x = parts(a), y = parts(b)
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    private static func info(_ text: String) {
+        let a = NSAlert()
+        a.messageText = "TrackEdge"
+        a.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
+    static func check(manual: Bool) {
+        guard !repo.hasPrefix("YOUR_"),
+              let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
+            if manual { info("Update source isn’t configured yet.") }
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String else {
+                if manual { DispatchQueue.main.async { info("Couldn’t reach GitHub to check for updates.") } }
+                return
+            }
+            let assets = json["assets"] as? [[String: Any]] ?? []
+            let zip = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true })?["browser_download_url"] as? String
+            DispatchQueue.main.async {
+                guard isNewer(tag, than: current), let zip = zip, let zurl = URL(string: zip) else {
+                    if manual { info("You’re up to date (version \(current)).") }
+                    return
+                }
+                let a = NSAlert()
+                a.messageText = "TrackEdge \(tag) is available"
+                a.informativeText = "You have \(current). Install the update and restart now?"
+                a.addButton(withTitle: "Install & Restart")
+                a.addButton(withTitle: "Later")
+                NSApp.activate(ignoringOtherApps: true)
+                if a.runModal() == .alertFirstButtonReturn { install(zurl) }
+            }
+        }.resume()
+    }
+
+    private static func install(_ zip: URL) {
+        URLSession.shared.downloadTask(with: zip) { tmp, _, _ in
+            guard let tmp = tmp else { DispatchQueue.main.async { info("Download failed.") }; return }
+            let zipPath = NSTemporaryDirectory() + "TrackEdge-update.zip"
+            let work = NSTemporaryDirectory() + "trackedge-update"
+            try? FileManager.default.removeItem(atPath: zipPath)
+            do { try FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: zipPath)) }
+            catch { DispatchQueue.main.async { info("Couldn’t save the update.") }; return }
+
+            let app = Bundle.main.bundlePath
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let script = """
+            rm -rf "\(work)"; mkdir -p "\(work)"
+            /usr/bin/ditto -x -k "\(zipPath)" "\(work)" || exit 1
+            NEW=$(find "\(work)" -maxdepth 2 -name 'TrackEdge.app' | head -1)
+            [ -n "$NEW" ] || exit 1
+            while kill -0 \(pid) 2>/dev/null; do sleep 0.3; done
+            /usr/bin/xattr -cr "$NEW"
+            rm -rf "\(app)" && mv "$NEW" "\(app)" && open "\(app)"
+            """
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", script]
+            try? p.run()
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }.resume()
+    }
+}
+
 // MARK: - Menu bar app
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -799,6 +891,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         CursorLock.install()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { Updater.check(manual: false) }
+        Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in Updater.check(manual: false) }
         Multitouch.shared.start()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restartTouch),
                                                           name: NSWorkspace.didWakeNotification, object: nil)
@@ -857,6 +951,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 options: [("Narrow", 0.04), ("Default", 0.06), ("Wide", 0.09), ("Wider", 0.12)],
                 action: #selector(setEdge(_:)))
         menu.addItem(.separator())
+        add(menu, "Check for Updates… (v\(Updater.current))", #selector(checkUpdates))
         add(menu, "Open at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
         add(menu, "Quit TrackEdge", #selector(quit))
     }
@@ -872,6 +967,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func setArea(_ s: NSMenuItem) { if let v = s.representedObject as? Double { Settings.shared.activeArea = v } }
     @objc private func setSensitivity(_ s: NSMenuItem) { if let v = s.representedObject as? Double { Settings.shared.sensitivity = v } }
     @objc private func setEdge(_ s: NSMenuItem) { if let v = s.representedObject as? Double { Settings.shared.edgeWidth = v } }
+    @objc private func checkUpdates() { Updater.check(manual: true) }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func toggleLogin() {
